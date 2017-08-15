@@ -46,10 +46,10 @@ class CexioInterface(object):
         pass
 
     def pong_act(self):
-		self.logger.debug("Sending pong")
-		self.ws.send(json.dumps({
-			"e": "pong"
-		}))
+        self.logger.debug("Sending pong")
+        self.ws.send(json.dumps({
+            "e": "pong"
+        }))
 
     def disconnecting_act(self):
         pass
@@ -113,7 +113,6 @@ class CexioInterface(object):
 
 class CexioMarketDataHandler(CexioInterface):
     def __init__(self, key, secret, cexio_logger):
-        print "init CexioMarketDataHandler"
         CexioInterface.__init__(self, key, secret, cexio_logger)
         self.actions_on_msg_map['tick'] = self.tick_act
         self.logger.debug("actions_on_msg_map = {}".format(self.actions_on_msg_map))
