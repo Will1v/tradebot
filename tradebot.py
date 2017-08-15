@@ -21,8 +21,6 @@ if __name__ == "__main__":
 
     cred = get_credentials()
 
-#    ci = CexioInterface(cred['key'], cred['secret'], cexio_logger)
-
     cmdh = CexioMarketDataHandler(cred['key'], cred['secret'], cexio_logger)
 #    assert cmdh
     assert ci
