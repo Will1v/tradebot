@@ -1,12 +1,15 @@
 import logging
-import sys
+import sys, os
 from datetime import datetime
+
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
 
-    filepath = "../logs/{}_{}.log".format(logger_name, datetime.now().strftime('%Y%m%d_%H%M'))
+#    filepath = "../logs/{}_{}.log".format(logger_name, datetime.now().strftime('%Y%m%d_%H%M'))
+    filepath = "../logs/{}_{}.log".format(logger_name, datetime.now().strftime('%Y%m%d'))
+    os.remove(filepath)
     handler = logging.FileHandler(filepath)
     handler.setLevel(logging.DEBUG)
 

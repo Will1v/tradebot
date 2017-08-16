@@ -4,7 +4,9 @@ import datetime, time, sys
 import json, yaml
 import pdb
 import logging
+import threading
 import thread
+from tabulate import tabulate
 
 import websocket
 
@@ -20,10 +22,11 @@ class CexioInterface(object):
     """
     
     def __init__(self, key, secret, cexio_logger):
+#       type: (String, String, Logger) -> object
         self.key = key
         self.secret = secret
         self.logger = cexio_logger
-        #Initialising connection to websocketi
+#       Initialising connection to websocketi
         self.balance = None
         self.actions_on_msg_map = {
             "connected": self.connected_act,
@@ -31,19 +34,30 @@ class CexioInterface(object):
             "disconnecting": self.disconnecting_act,
             "auth": self.auth_act
             }
+        self.is_connected = False
     
+    def start(self):
+        self.logger.info("Starting new {}".format(type(self)))
+        websocket.enableTrace(False)
+        self.ws = websocket.WebSocketApp(web_socket_url,
+                                  on_message = self.on_message,
+                                  on_error = self.on_error,
+                                  on_close = self.on_close)
+        self.ws.on_open = self.on_open
+        thread.start_new_thread(self.ws.run_forever, ())
+        time.sleep(1)
 
     def on_message(self, ws, message):
         msg = yaml.load(message)
         self.logger.info("[WS] on_message event, msg = {}".format(msg))
         if msg['e'] in self.actions_on_msg_map.keys():
-            self.logger.debug("msg e: {} is in map: {}".format(msg['e'], self.actions_on_msg_map.keys()))
-            self.actions_on_msg_map[msg['e']]()
+            self.actions_on_msg_map[msg['e']](msg)
         else:
             self.logger.warning("Unknown message: {}, will be discarded".format(msg))
 
     def connected_act(self):
-        pass
+        self.is_connected = True
+        self.logger.info("[WS] Websocket connected")
 
     def pong_act(self):
         self.logger.debug("Sending pong")
@@ -52,40 +66,23 @@ class CexioInterface(object):
         }))
 
     def disconnecting_act(self):
-        pass
+        self.is_connected = False
+        self.logger.info("[WS] Disconnecting...")
 
     def auth_act(self):
-        pass
+        self.logger.info("[WS] Authentified to exchange")
 
     def on_error(self, ws, error):
         self.logger.info("[WS] on_error event, err = {}".format(error))
 
     def on_close(self, ws):
         self.logger.info("[WS] on_message event, msg = {}".format(message))
-        self.logger.info("Websocket closed")
+        self.logger.warning("Websocket closed")
 
     def on_open(self, ws):
-        self.logger.debug("##### on_open event code here #####")
-        #self.connect()
         def run(*args):
             self.connect()
-            """
-            self.logger.info("Opening connexion to: " + web_socket_url)
-            self.ws = create_connection(web_socket_url)
-            self.logger.debug("Handshake: " + self.ws.recv())
-            """
         thread.start_new_thread(run, ())
-
-
-    def start(self):
-        self.logger.info("Starting new interface")
-        websocket.enableTrace(False)
-        self.ws = websocket.WebSocketApp(web_socket_url,
-                                  on_message = self.on_message,
-                                  on_error = self.on_error,
-                                  on_close = self.on_close)
-        self.ws.on_open = self.on_open
-        thread.start_new_thread(self.ws.run_forever, ())
 
     def get_timestamp(self):
         return int(time.time())
@@ -93,7 +90,7 @@ class CexioInterface(object):
     def create_signature(self):  # (string key, string secret) 
         timestamp = self.get_timestamp()  # UNIX timestamp in seconds
         nonce = "{}{}".format(timestamp, self.key)
-        self.logger.info("Creating signature with key = {} and nonce = {}".format(self.key, nonce))
+        self.logger.info("[WS] Creating signature with key = {} and nonce = {}".format(self.key, nonce))
         return timestamp, hmac.new(self.secret, nonce, hashlib.sha256).hexdigest()
 
     def auth_request(self):
@@ -103,37 +100,77 @@ class CexioInterface(object):
                 'auth': {'key': self.key, 'signature': signature, 'timestamp': timestamp,}, 'oid': 'auth', })
 
     def connect(self):
-        self.logger.info("Connecting to websocket: " + web_socket_url)
+        self.logger.info("[WS] Connecting to websocket: " + web_socket_url)
         self.ws.send(self.auth_request())
 
-        #self.logger.debug("Connection result: " + self.ws.recv())
-
-
-
-
 class CexioMarketDataHandler(CexioInterface):
+    """
+    CexioMarketDataHandler allows to deal with all Market data tasks
+    """
     def __init__(self, key, secret, cexio_logger):
         CexioInterface.__init__(self, key, secret, cexio_logger)
         self.actions_on_msg_map['tick'] = self.tick_act
-        self.logger.debug("actions_on_msg_map = {}".format(self.actions_on_msg_map))
+        self.actions_on_msg_map['md_update'] = self.md_update_act
+        self.actions_on_msg_map['order-book-subscribe'] = self.order_book_snapshot_act
+
+    def start_listening(self):
+        self.start()
+        time.sleep(1)
 
 
-    def subscribe_ticker(self):
-        self.logger.info("Subscribing to tickers")
-        oid = str(self.get_timestamp()) + "_subscribe"
+    def subscribe_tickers(self):
+        self.logger.info("[WS] Subscribing to tickers")
+        oid = str(self.get_timestamp()) + "_tickers"
         msg = json.dumps({
             "e": "subscribe",
-            #"rooms": ["BTC", "ETH", "USD"]
             "rooms": ["tickers"]
         })
         self.ws.send(msg)
-        self.logger.info("Subscription request send: {}".format(msg))
+
+    def subscribe_orderbook(self, symbol1, symbol2, depth = -1):
+        if not self.is_connected:
+            self.start()
+        self.logger.info("[WS] Subscribing to pair {}/{}".format(symbol1, symbol2))
+        oid = "{}_orderbook_{}_{}".format(str(self.get_timestamp()), symbol1, symbol2)
+        msg = json.dumps({
+            "e": "order-book-subscribe",
+            "data": {
+                "pair": [
+                    symbol1,
+                    symbol2
+                ],
+                "subscribe": True,
+                "depth": depth
+            },
+            "oid": oid
+        })
+        self.ws.send(msg)
 
     def tick_act(self):
         pass
 
+    def order_book_snapshot_act(self, msg):
+        self.logger.info("[WS] order_book_snapshot received")
+        asks = msg['data']['asks']
+        bids = msg['data']['bids']
+
+        self.logger.debug("BQty\tBid\tAsk\tAQty")
+        depth = min(len(asks), len(bids))
+        limits = []
+        for i in range(depth):
+            limits.append([bids[i][1], bids[i][0], asks[i][0], asks[i][1]])
+        self.logger.info("\n{}\n".format(tabulate(limits, headers=["BQty", "Bid", "Ask", "AQty"], tablefmt="simple")))
+
+
+    def md_update_act(self, msg):
+        self.logger.info("[WS] md_update received")
+        self.logger.info(msg['data'])
+
 
 class CexioTraderBot(CexioInterface):
+    """
+    CexioTraderBot allows trading
+    """
     def __init__(self, key, secret, cexio_logger):
         CexioInterface.__init__(self, key, secret, cexio_logger)
 

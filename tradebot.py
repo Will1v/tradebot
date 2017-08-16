@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from cexio_interface import CexioInterface
+from cexio_interface import CexioMarketDataHandler, CexioTraderBot
 from logger import get_logger
 import time
 
@@ -22,13 +22,14 @@ if __name__ == "__main__":
     cred = get_credentials()
 
     cmdh = CexioMarketDataHandler(cred['key'], cred['secret'], cexio_logger)
-#    assert cmdh
-    assert ci
+    assert cmdh
+#    assert ci
 #    cmdh.start()
-    ci.start()
-    time.sleep(3)
-#    cmdh.subscribe_ticker()
-#    cmdh.connect()
+    cmdh.subscribe_orderbook('BTC', 'USD', 10)
+
+#     time.sleep(3)
+# #    cmdh.subscribe_ticker()
+# #    cmdh.connect()
     while True:
         time.sleep(60)
-        cmdh.update_balance()
+#         cmdh.update_balance()
