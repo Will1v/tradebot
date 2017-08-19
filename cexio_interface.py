@@ -7,6 +7,7 @@ import logging
 import threading
 import thread
 from tabulate import tabulate
+from collections import OrderedDict
 
 import websocket
 
@@ -21,7 +22,7 @@ class CexioInterface(object):
         CexioTraderBot
     """
     
-    def __init__(self, key, secret, cexio_logger):
+    def __init__(self, key, secret, db_interface, cexio_logger):
 #       type: (String, String, Logger) -> object
         self.key = key
         self.secret = secret
@@ -35,6 +36,7 @@ class CexioInterface(object):
             "auth": self.auth_act
             }
         self.is_connected = False
+        self.db = db_interface
     
     def start(self):
         self.logger.info("Starting new {}".format(type(self)))
@@ -76,7 +78,7 @@ class CexioInterface(object):
         self.logger.info("[WS] on_error event, err = {}".format(error))
 
     def on_close(self, ws):
-        self.logger.info("[WS] on_message event, msg = {}".format(message))
+        self.logger.info("[WS] on_close event, msg = {}".format(message))
         self.logger.warning("Websocket closed")
 
     def on_open(self, ws):
@@ -107,11 +109,41 @@ class CexioMarketDataHandler(CexioInterface):
     """
     CexioMarketDataHandler allows to deal with all Market data tasks
     """
-    def __init__(self, key, secret, cexio_logger):
-        CexioInterface.__init__(self, key, secret, cexio_logger)
+    def __init__(self, key, secret, db_interface, cexio_logger):
+        CexioInterface.__init__(self, key, secret, db_interface, cexio_logger)
+        self.ccy_books = {}
+
         self.actions_on_msg_map['tick'] = self.tick_act
         self.actions_on_msg_map['md_update'] = self.md_update_act
         self.actions_on_msg_map['order-book-subscribe'] = self.order_book_snapshot_act
+
+        self.logger.debug("actions_in_msg_map for {} = {}".format(type(self), self.actions_on_msg_map.keys()))
+
+    def tick_act(self):
+        pass
+
+    def md_update_act(self, msg):
+        self.logger.info("[WS] md_update received")
+        self.logger.info(msg['data'])
+
+
+    def order_book_snapshot_act(self, msg):
+        self.logger.info("[WS] order_book_snapshot received")
+        #        self.ccy_books[]
+
+        asks = msg['data']['asks']
+        bids = msg['data']['bids']
+        depth = min(len(asks), len(bids))
+        order_book = {"bids": {}, "asks": {}}
+        for i in range(depth):
+            order_book["bids"][bids[i][0]] = bids[i][1]
+            order_book["asks"][asks[i][0]] = asks[i][1]
+
+        self.logger.debug("Full order_book:"
+                          "\n bids = {}"
+                          "\n asks = {}".format(order_book["bids"], order_book["asks"]))
+        # self.logger.info("\n{}\n".format(tabulate(limits, headers=["BQty", "Bid", "Ask", "AQty"], tablefmt="simple", floatfmt=".6f")))
+        self.display_order_book(order_book)
 
     def start_listening(self):
         self.start()
@@ -146,25 +178,26 @@ class CexioMarketDataHandler(CexioInterface):
         })
         self.ws.send(msg)
 
-    def tick_act(self):
+
+    def sort_order_book(self, order_book, depth = 10):
+        bids = order_book['bids'].keys()
+        asks = order_book['asks'].keys()
+        bids.sort(reverse=True)
+        asks.sort()
+        if depth == 0:
+            depth = min(depth, len(bids), len(asks))
+
+        return [(order_book['bids'].get(bids[i]), bids[i], asks[i], order_book['asks'].get(asks[i])) for i in range(depth)]
+
+    def display_order_book(self, order_book):
+
+        self.logger.info("\n{}\n".format(tabulate(self.sort_order_book(order_book), headers=["BQty", "Bid", "Ask", "AQty"], tablefmt="simple", floatfmt=".6f")))
+
+    def smooth_bid_ask(self, depth):
         pass
 
-    def order_book_snapshot_act(self, msg):
-        self.logger.info("[WS] order_book_snapshot received")
-        asks = msg['data']['asks']
-        bids = msg['data']['bids']
-
-        self.logger.debug("BQty\tBid\tAsk\tAQty")
-        depth = min(len(asks), len(bids))
-        limits = []
-        for i in range(depth):
-            limits.append([bids[i][1], bids[i][0], asks[i][0], asks[i][1]])
-        self.logger.info("\n{}\n".format(tabulate(limits, headers=["BQty", "Bid", "Ask", "AQty"], tablefmt="simple")))
 
 
-    def md_update_act(self, msg):
-        self.logger.info("[WS] md_update received")
-        self.logger.info(msg['data'])
 
 
 class CexioTraderBot(CexioInterface):
