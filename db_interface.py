@@ -9,10 +9,10 @@ class CrateDbInterface(object):
         'market_data_histo': "CREATE TABLE market_data_histo (" \
                                        "mdh_timestamp timestamp, " \
                                        "ccy_id string, " \
-                                       "bid_qty integer, " \
+                                       "bid_qty float, " \
                                        "bid float, " \
                                        "ask float, " \
-                                       "ask_qty integer, " \
+                                       "ask_qty float, " \
                                        "primary key (mdh_timestamp, ccy_id))",
         'order_book_histo': "CREATE TABLE order_book_histo ("
                             "obh_timestamp timestamp, "
@@ -22,6 +22,8 @@ class CrateDbInterface(object):
     }
 
     def __init__(self, db_logger):
+#       type: (Logger) -> object
+
         self.logger = db_logger
         try:
             self.connection = client.connect("localhost:4200")
@@ -50,4 +52,19 @@ class CrateDbInterface(object):
 
     def run_query(self, query):
         self.logger.debug("Running command:\n{}\n".format(self.format_query(query)))
-        self.cursor.execute(self.format_query(query))
+        try:
+            self.cursor.execute(self.format_query(query))
+        except:
+            self.logger.warning("Query {} failed!".format(query))
+
+    def insert_query(self, table, data_dict):
+        self.logger.debug("Generating INSERT")
+        self.logger.debug("Generating INSERT query for table = {} and data = \n{}".format(table, data_dict))
+        query = "INSERT INTO {} ".format(table)
+        keys = ""
+        values = ""
+        for k, v in data_dict.iteritems():
+            keys += "{}, ".format(str(k).replace("\'", "\'\'"))
+            values += "\'{}\', ".format(str(v).replace("\'", "\'\'"))
+        query += "({}) VALUES ({})".format(keys[:-2], values[:-2])  #using [:-2] to remove the extra ", " of keys and values strings.
+        return query

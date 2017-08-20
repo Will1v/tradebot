@@ -8,6 +8,7 @@ import threading
 import thread
 from tabulate import tabulate
 from collections import OrderedDict
+from db_interface import CrateDbInterface
 
 import websocket
 
@@ -23,7 +24,7 @@ class CexioInterface(object):
     """
     
     def __init__(self, key, secret, db_interface, cexio_logger):
-#       type: (String, String, Logger) -> object
+#       type: (String, String, CrateDbInterface, Logger) -> object
         self.key = key
         self.secret = secret
         self.logger = cexio_logger
@@ -53,26 +54,27 @@ class CexioInterface(object):
         msg = yaml.load(message)
         self.logger.info("[WS] on_message event, msg = {}".format(msg))
         if msg['e'] in self.actions_on_msg_map.keys():
+            self.logger.info("Message {} recognised, launching {}".format(msg, self.actions_on_msg_map[msg['e']]))
             self.actions_on_msg_map[msg['e']](msg)
         else:
             self.logger.warning("Unknown message: {}, will be discarded".format(msg))
 
-    def connected_act(self):
+    def connected_act(self, msg):
         self.is_connected = True
         self.logger.info("[WS] Websocket connected")
 
-    def pong_act(self):
+    def pong_act(self, msg):
         self.logger.debug("Sending pong")
         self.ws.send(json.dumps({
             "e": "pong"
         }))
 
-    def disconnecting_act(self):
+    def disconnecting_act(self, msg):
         self.is_connected = False
         self.logger.info("[WS] Disconnecting...")
 
-    def auth_act(self):
-        self.logger.info("[WS] Authentified to exchange")
+    def auth_act(self, msg):
+        self.logger.info("[WS] Authenticated to exchange")
 
     def on_error(self, ws, error):
         self.logger.info("[WS] on_error event, err = {}".format(error))
@@ -89,7 +91,7 @@ class CexioInterface(object):
     def get_timestamp(self):
         return int(time.time())
 
-    def create_signature(self):  # (string key, string secret) 
+    def create_signature(self):  # (string key, string secret)
         timestamp = self.get_timestamp()  # UNIX timestamp in seconds
         nonce = "{}{}".format(timestamp, self.key)
         self.logger.info("[WS] Creating signature with key = {} and nonce = {}".format(self.key, nonce))
@@ -111,7 +113,7 @@ class CexioMarketDataHandler(CexioInterface):
     """
     def __init__(self, key, secret, db_interface, cexio_logger):
         CexioInterface.__init__(self, key, secret, db_interface, cexio_logger)
-        self.ccy_books = {}
+        self.ccy_order_books = {}
 
         self.actions_on_msg_map['tick'] = self.tick_act
         self.actions_on_msg_map['md_update'] = self.md_update_act
@@ -119,31 +121,61 @@ class CexioMarketDataHandler(CexioInterface):
 
         self.logger.debug("actions_in_msg_map for {} = {}".format(type(self), self.actions_on_msg_map.keys()))
 
-    def tick_act(self):
+    def tick_act(self, msg):
         pass
+
+    def order_book_snapshot_act(self, msg):
+        self.logger.info("[WS] order_book_snapshot received")
+        ccy = msg['oid'][-6:]
+        self.ccy_order_books[ccy] = self.build_order_book(msg['data'])
+        self.logger.debug("Orderbook for {} is now: \n{}".format(ccy, self.ccy_order_books[ccy]))
+        data_dict = {
+            'obh_timestamp': self.get_timestamp(),
+            'ccy_id': ccy,
+            'order_book': self.ccy_order_books[ccy]
+        }
+        query = self.db.insert_query('order_book_histo', data_dict)
+        self.db.run_query(query)
 
     def md_update_act(self, msg):
         self.logger.info("[WS] md_update received")
         self.logger.info(msg['data'])
+        ccy = str(msg['data']['pair']).replace(":", "")
+        self.logger.debug("Updating order_book for {}".format(ccy))
+        for b in msg['data']['bids']:
+            print "bids"
+            print self.ccy_order_books[ccy]['bids']
+            print b[0]
+            print self.ccy_order_books[ccy]['bids'][b[0]]
 
+            if b[1] == 0:
+                self.logger.debug("bids before = {}".format(self.ccy_order_books[ccy]['bids']))
+                self.ccy_order_books[ccy]['bids'].pop(b[0])
+                self.logger.debug("bids after pop = {}".format(self.ccy_order_books[ccy]['bids']))
+            else:
+                self.logger.debug("bids before = {}".format(self.ccy_order_books[ccy]['bids']))
+                self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
+                self.logger.debug("Adding : {} / {}".format(b[0], b[1]))
+                self.logger.debug("bids are now: {}".format(self.ccy_order_books[ccy]['bids']))
+        for a in msg['data']['asks']:
+            if a[1] == 0:
+                self.ccy_order_books[ccy]['asks'].pop(a[0])
+            else:
+                self.ccy_order_books[ccy]['asks'][a[0]] = a[1]
+                self.logger.debug("asks are now: {}".format(self.ccy_order_books[ccy]['asks']))
+        self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))
 
-    def order_book_snapshot_act(self, msg):
-        self.logger.info("[WS] order_book_snapshot received")
-        #        self.ccy_books[]
+        self.db.run_query()
 
-        asks = msg['data']['asks']
-        bids = msg['data']['bids']
-        depth = min(len(asks), len(bids))
-        order_book = {"bids": {}, "asks": {}}
-        for i in range(depth):
-            order_book["bids"][bids[i][0]] = bids[i][1]
-            order_book["asks"][asks[i][0]] = asks[i][1]
+    def update_order_book(self, ccy, new_data):
+        self.logger.debug("Updating order_book for {}".format(ccy))
+        for b in new_data['bids']:
+            if b[1] == 0:
+                self.ccy_order_books[ccy].pop(b[0])
+            else:
+                self.ccy_order_books[ccy][b[0]] = b[1]
+        self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))
 
-        self.logger.debug("Full order_book:"
-                          "\n bids = {}"
-                          "\n asks = {}".format(order_book["bids"], order_book["asks"]))
-        # self.logger.info("\n{}\n".format(tabulate(limits, headers=["BQty", "Bid", "Ask", "AQty"], tablefmt="simple", floatfmt=".6f")))
-        self.display_order_book(order_book)
 
     def start_listening(self):
         self.start()
@@ -160,10 +192,12 @@ class CexioMarketDataHandler(CexioInterface):
         self.ws.send(msg)
 
     def subscribe_orderbook(self, symbol1, symbol2, depth = -1):
+        self.logger.info("[WS] Subscribing to pair {}/{}".format(symbol1, symbol2))
         if not self.is_connected:
             self.start()
-        self.logger.info("[WS] Subscribing to pair {}/{}".format(symbol1, symbol2))
-        oid = "{}_orderbook_{}_{}".format(str(self.get_timestamp()), symbol1, symbol2)
+            self.logger.warning("Not connected, trying to reconnect")
+            time.sleep(2)
+        oid = "{}_orderbook_{}{}".format(str(self.get_timestamp()), symbol1, symbol2)
         msg = json.dumps({
             "e": "order-book-subscribe",
             "data": {
@@ -178,8 +212,15 @@ class CexioMarketDataHandler(CexioInterface):
         })
         self.ws.send(msg)
 
+    def build_order_book(self, data, order_book = {'bids': [], 'asks': []}):
+        for b in data['bids']:
+            order_book['bids'].append({b[0]: b[1]})
+        for a in data['asks']:
+            order_book['asks'].append({a[0]: a[1]})
+        return order_book
 
     def sort_order_book(self, order_book, depth = 10):
+        self.logger.debug("Sorting order book")
         bids = order_book['bids'].keys()
         asks = order_book['asks'].keys()
         bids.sort(reverse=True)
@@ -187,11 +228,9 @@ class CexioMarketDataHandler(CexioInterface):
         if depth == 0:
             depth = min(depth, len(bids), len(asks))
 
-        return [(order_book['bids'].get(bids[i]), bids[i], asks[i], order_book['asks'].get(asks[i])) for i in range(depth)]
+        sorted_book = [(order_book['bids'].get(bids[i]), bids[i], asks[i], order_book['asks'].get(asks[i])) for i in range(depth)]
+        return sorted_book
 
-    def display_order_book(self, order_book):
-
-        self.logger.info("\n{}\n".format(tabulate(self.sort_order_book(order_book), headers=["BQty", "Bid", "Ask", "AQty"], tablefmt="simple", floatfmt=".6f")))
 
     def smooth_bid_ask(self, depth):
         pass
