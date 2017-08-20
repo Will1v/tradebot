@@ -88,6 +88,7 @@ class CexioInterface(object):
             self.connect()
         thread.start_new_thread(run, ())
 
+    #TODO:  find a way to have float timestamps (without breaking signature)
     def get_timestamp(self):
         return int(time.time())
 
@@ -114,7 +115,7 @@ class CexioMarketDataHandler(CexioInterface):
     def __init__(self, key, secret, db_interface, cexio_logger):
         CexioInterface.__init__(self, key, secret, db_interface, cexio_logger)
         self.ccy_order_books = {}
-
+        self.number_of_updates = 0
         self.actions_on_msg_map['tick'] = self.tick_act
         self.actions_on_msg_map['md_update'] = self.md_update_act
         self.actions_on_msg_map['order-book-subscribe'] = self.order_book_snapshot_act
@@ -136,46 +137,47 @@ class CexioMarketDataHandler(CexioInterface):
         }
         query = self.db.insert_query('order_book_histo', data_dict)
         self.db.run_query(query)
+        self.number_of_updates += 1
 
     def md_update_act(self, msg):
         self.logger.info("[WS] md_update received")
         self.logger.info(msg['data'])
         ccy = str(msg['data']['pair']).replace(":", "")
         self.logger.debug("Updating order_book for {}".format(ccy))
+        self.logger.debug("Order book was : {}".format(self.ccy_order_books[ccy]))
         for b in msg['data']['bids']:
-            print "bids"
-            print self.ccy_order_books[ccy]['bids']
-            print b[0]
-            print self.ccy_order_books[ccy]['bids'][b[0]]
-
             if b[1] == 0:
-                self.logger.debug("bids before = {}".format(self.ccy_order_books[ccy]['bids']))
                 self.ccy_order_books[ccy]['bids'].pop(b[0])
-                self.logger.debug("bids after pop = {}".format(self.ccy_order_books[ccy]['bids']))
             else:
-                self.logger.debug("bids before = {}".format(self.ccy_order_books[ccy]['bids']))
                 self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
-                self.logger.debug("Adding : {} / {}".format(b[0], b[1]))
-                self.logger.debug("bids are now: {}".format(self.ccy_order_books[ccy]['bids']))
         for a in msg['data']['asks']:
             if a[1] == 0:
                 self.ccy_order_books[ccy]['asks'].pop(a[0])
             else:
                 self.ccy_order_books[ccy]['asks'][a[0]] = a[1]
-                self.logger.debug("asks are now: {}".format(self.ccy_order_books[ccy]['asks']))
-        self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))
+        #self.sort_order_book to fix
+        #self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))
 
-        self.db.run_query()
+        data_dict = {
+            'obh_timestamp': self.get_timestamp(),
+            'ccy_id': ccy,
+            'order_book': self.ccy_order_books[ccy]
+        }
+        query = self.db.insert_query('order_book_histo', data_dict)
+        self.db.run_query(query)
+        self.number_of_updates += 1
+        self.logger.debug("{}th orderbook_snapshot".format(self.number_of_updates))
 
-    def update_order_book(self, ccy, new_data):
+
+    """def update_order_book(self, ccy, new_data):
         self.logger.debug("Updating order_book for {}".format(ccy))
         for b in new_data['bids']:
             if b[1] == 0:
-                self.ccy_order_books[ccy].pop(b[0])
+                self.logger.debug("b1 = {}, popping b[0] : {}".format(b[1], b[0]))
+                self.ccy_order_books[ccy]['bids'].pop(b[0])
             else:
-                self.ccy_order_books[ccy][b[0]] = b[1]
-        self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))
-
+                self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
+        self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))"""
 
     def start_listening(self):
         self.start()
@@ -212,11 +214,12 @@ class CexioMarketDataHandler(CexioInterface):
         })
         self.ws.send(msg)
 
-    def build_order_book(self, data, order_book = {'bids': [], 'asks': []}):
+    def build_order_book(self, data, order_book = {'bids': {}, 'asks': {}}):
+        self.logger.debug("building order book for {}".format(data['pair']))
         for b in data['bids']:
-            order_book['bids'].append({b[0]: b[1]})
+            order_book['bids'][b[0]] = b[1]
         for a in data['asks']:
-            order_book['asks'].append({a[0]: a[1]})
+            order_book['asks'][a[0]] = a[1]
         return order_book
 
     def sort_order_book(self, order_book, depth = 10):
@@ -228,7 +231,9 @@ class CexioMarketDataHandler(CexioInterface):
         if depth == 0:
             depth = min(depth, len(bids), len(asks))
 
-        sorted_book = [(order_book['bids'].get(bids[i]), bids[i], asks[i], order_book['asks'].get(asks[i])) for i in range(depth)]
+        #TODO : fix & finish
+        sorted_book = [(order_book['bids'][bids[i]], bids[i], asks[i], order_book['asks'][asks[i]]) for i in range(depth)]
+        print sorted_book
         return sorted_book
 
 
