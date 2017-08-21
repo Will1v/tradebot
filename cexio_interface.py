@@ -52,9 +52,9 @@ class CexioInterface(object):
 
     def on_message(self, ws, message):
         msg = yaml.load(message)
-        self.logger.info("[WS] on_message event, msg = {}".format(msg))
+        self.logger.debug("[WS] on_message event, msg = {}".format(msg))
         if msg['e'] in self.actions_on_msg_map.keys():
-            self.logger.info("Message {} recognised, launching {}".format(msg, self.actions_on_msg_map[msg['e']]))
+            self.logger.debug("Message {} recognised, launching {}".format(msg, self.actions_on_msg_map[msg['e']]))
             self.actions_on_msg_map[msg['e']](msg)
         else:
             self.logger.warning("Unknown message: {}, will be discarded".format(msg))
@@ -79,7 +79,7 @@ class CexioInterface(object):
     def on_error(self, ws, error):
         self.logger.info("[WS] on_error event, err = {}".format(error))
 
-    def on_close(self, ws):
+    def on_close(self, ws, message):
         self.logger.info("[WS] on_close event, msg = {}".format(message))
         self.logger.warning("Websocket closed")
 
@@ -88,9 +88,11 @@ class CexioInterface(object):
             self.connect()
         thread.start_new_thread(run, ())
 
-    #TODO:  find a way to have float timestamps (without breaking signature)
     def get_timestamp(self):
         return int(time.time())
+
+    def get_ms_timestamp(self):
+        return int(time.time()*1000)
 
     def create_signature(self):  # (string key, string secret)
         timestamp = self.get_timestamp()  # UNIX timestamp in seconds
@@ -115,6 +117,8 @@ class CexioMarketDataHandler(CexioInterface):
     def __init__(self, key, secret, db_interface, cexio_logger):
         CexioInterface.__init__(self, key, secret, db_interface, cexio_logger)
         self.ccy_order_books = {}
+        #ccy_order_books_buffer: dict(ccy) -> {timestamp: [(bid_qty, bid, ask, ask_qty)]}
+        self.ccy_order_books_buffer = {}
         self.number_of_updates = 0
         self.actions_on_msg_map['tick'] = self.tick_act
         self.actions_on_msg_map['md_update'] = self.md_update_act
@@ -129,55 +133,61 @@ class CexioMarketDataHandler(CexioInterface):
         self.logger.info("[WS] order_book_snapshot received")
         ccy = msg['oid'][-6:]
         self.ccy_order_books[ccy] = self.build_order_book(msg['data'])
+        self.buffer_order_book(ccy)
         self.logger.debug("Orderbook for {} is now: \n{}".format(ccy, self.ccy_order_books[ccy]))
+        self.record_best_bid_ask(ccy)
+        self.number_of_updates += 1
+
+    def md_update_act(self, msg):
+        self.logger.debug("[WS] md_update received")
+        ccy = str(msg['data']['pair']).replace(":", "")
+        self.update_order_book(ccy, msg['data']['bids'], msg['data']['asks'])
+        self.record_best_bid_ask(ccy)
+        self.record_order_book_histo(ccy)
+        self.number_of_updates += 1
+        self.logger.debug("{}th orderbook_snapshot".format(self.number_of_updates))
+
+    def record_best_bid_ask(self, ccy):
         data_dict = {
-            'obh_timestamp': self.get_timestamp(),
+            'timestamp': self.get_ms_timestamp(),
+            'ccy_id': ccy,
+            'ask_qty': self.ccy_order_books[ccy]['asks'].values()[0],
+            'ask': self.ccy_order_books[ccy]['asks'].keys()[0],
+            'bid_qty': self.ccy_order_books[ccy]['bids'].values()[0],
+            'bid': self.ccy_order_books[ccy]['bids'].keys()[0]
+        }
+        query = self.db.insert_query('raw_market_data_histo', data_dict)
+        self.db.run_query(query)
+
+    def record_order_book_histo(self, ccy):
+        self.logger.debug("Recording order_book in order_book_histo")
+        data_dict = {
+            'timestamp': self.get_ms_timestamp(),
             'ccy_id': ccy,
             'order_book': self.ccy_order_books[ccy]
         }
         query = self.db.insert_query('order_book_histo', data_dict)
         self.db.run_query(query)
-        self.number_of_updates += 1
 
-    def md_update_act(self, msg):
-        self.logger.info("[WS] md_update received")
-        self.logger.info(msg['data'])
-        ccy = str(msg['data']['pair']).replace(":", "")
+    #TODO: to finish
+    def buffer_order_book(self, ccy):
+        self.logger.debug("Buffering orderbook")
+        self.ccy_order_books_buffer[ccy] = {self.get_ms_timestamp(), self.in_depth_limit(ccy, self.ccy_order_books[ccy])}
+
+
+    def update_order_book(self, ccy, bids, asks):
         self.logger.debug("Updating order_book for {}".format(ccy))
         self.logger.debug("Order book was : {}".format(self.ccy_order_books[ccy]))
-        for b in msg['data']['bids']:
+        for b in bids:
             if b[1] == 0:
                 self.ccy_order_books[ccy]['bids'].pop(b[0])
             else:
                 self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
-        for a in msg['data']['asks']:
+        for a in asks:
             if a[1] == 0:
                 self.ccy_order_books[ccy]['asks'].pop(a[0])
             else:
                 self.ccy_order_books[ccy]['asks'][a[0]] = a[1]
-        #self.sort_order_book to fix
-        #self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))
-
-        data_dict = {
-            'obh_timestamp': self.get_timestamp(),
-            'ccy_id': ccy,
-            'order_book': self.ccy_order_books[ccy]
-        }
-        query = self.db.insert_query('order_book_histo', data_dict)
-        self.db.run_query(query)
-        self.number_of_updates += 1
-        self.logger.debug("{}th orderbook_snapshot".format(self.number_of_updates))
-
-
-    """def update_order_book(self, ccy, new_data):
-        self.logger.debug("Updating order_book for {}".format(ccy))
-        for b in new_data['bids']:
-            if b[1] == 0:
-                self.logger.debug("b1 = {}, popping b[0] : {}".format(b[1], b[0]))
-                self.ccy_order_books[ccy]['bids'].pop(b[0])
-            else:
-                self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
-        self.logger.info("Order book for {} now is: \n{}".format(ccy, self.sort_order_book(self.ccy_order_books[ccy])))"""
 
     def start_listening(self):
         self.start()
@@ -214,7 +224,7 @@ class CexioMarketDataHandler(CexioInterface):
         })
         self.ws.send(msg)
 
-    def build_order_book(self, data, order_book = {'bids': {}, 'asks': {}}):
+    def build_order_book(self, data, order_book = {'bids': OrderedDict(), 'asks': OrderedDict()}):
         self.logger.debug("building order book for {}".format(data['pair']))
         for b in data['bids']:
             order_book['bids'][b[0]] = b[1]
@@ -222,27 +232,25 @@ class CexioMarketDataHandler(CexioInterface):
             order_book['asks'][a[0]] = a[1]
         return order_book
 
-    def sort_order_book(self, order_book, depth = 10):
-        self.logger.debug("Sorting order book")
-        bids = order_book['bids'].keys()
-        asks = order_book['asks'].keys()
-        bids.sort(reverse=True)
-        asks.sort()
-        if depth == 0:
-            depth = min(depth, len(bids), len(asks))
-
-        #TODO : fix & finish
-        sorted_book = [(order_book['bids'][bids[i]], bids[i], asks[i], order_book['asks'][asks[i]]) for i in range(depth)]
-        print sorted_book
-        return sorted_book
 
 
-    def smooth_bid_ask(self, depth):
-        pass
-
-
-
-
+    def in_depth_limit(self, ccy, order_book):
+        #type: (str, {'bids': {},'asks': {}}) -> (float, float, float, float)
+        bid_qty = 0
+        bid = 0
+        ask = 0
+        ask_qty = 0
+        self.logger.debug("Calculating in depth limit for {}".format(ccy))
+        count_b = count_a = 0
+        for b, bq in order_book['bids'].iteritems():
+            bid_qty += bq
+            bid += b
+        bid = bid/count_b
+        for a, aq in order_book['asks'].iteritems():
+            ask_qty += aq
+            ask += a
+        ask = ask/count_a
+        return (bid_qty, bid, ask, ask_qty)
 
 class CexioTraderBot(CexioInterface):
     """

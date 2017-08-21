@@ -7,18 +7,26 @@ class CrateDbInterface(object):
 
     init_tables = {
         'market_data_histo': "CREATE TABLE market_data_histo (" \
-                                       "mdh_timestamp timestamp, " \
+                                       "timestamp timestamp, " \
                                        "ccy_id string, " \
                                        "bid_qty float, " \
                                        "bid float, " \
                                        "ask float, " \
                                        "ask_qty float, " \
-                                       "primary key (mdh_timestamp, ccy_id))",
+                                       "primary key (timestamp, ccy_id))",
+        'raw_market_data_histo': "CREATE TABLE raw_market_data_histo (" \
+                             "timestamp timestamp, " \
+                             "ccy_id string, " \
+                             "bid_qty float, " \
+                             "bid float, " \
+                             "ask float, " \
+                             "ask_qty float, " \
+                             "primary key (timestamp, ccy_id))",
         'order_book_histo': "CREATE TABLE order_book_histo ("
-                            "obh_timestamp timestamp, "
+                            "timestamp timestamp, "
                             "ccy_id string, "
                             "order_book string, "
-                            "primary key (obh_timestamp, ccy_id))"
+                            "primary key (timestamp, ccy_id))"
     }
 
     def __init__(self, db_logger):
@@ -58,7 +66,7 @@ class CrateDbInterface(object):
             self.logger.warning("Query {} failed!".format(query))
 
     def insert_query(self, table, data_dict):
-        self.logger.debug("Generating INSERT")
+        # type: (str, dict) -> str
         self.logger.debug("Generating INSERT query for table = {} and data = \n{}".format(table, data_dict))
         query = "INSERT INTO {} ".format(table)
         keys = ""
@@ -67,4 +75,5 @@ class CrateDbInterface(object):
             keys += "{}, ".format(str(k).replace("\'", "\'\'"))
             values += "\'{}\', ".format(str(v).replace("\'", "\'\'"))
         query += "({}) VALUES ({})".format(keys[:-2], values[:-2])  #using [:-2] to remove the extra ", " of keys and values strings.
+        self.logger.debug("Returning query: \n{}".format(query))
         return query
