@@ -28,7 +28,6 @@ class CexioInterface(object):
         self.key = key
         self.secret = secret
         self.logger = cexio_logger
-#       Initialising connection to websocketi
         self.balance = None
         self.actions_on_msg_map = {
             "connected": self.connected_act,
@@ -47,6 +46,11 @@ class CexioInterface(object):
                                   on_error = self.on_error,
                                   on_close = self.on_close)
         self.ws.on_open = self.on_open
+        thread.start_new_thread(self.ws.run_forever, ())
+        time.sleep(1)
+
+    def restart_ws(self):
+        self.logger.info("Restarting WebSocket")
         thread.start_new_thread(self.ws.run_forever, ())
         time.sleep(1)
 
@@ -77,7 +81,11 @@ class CexioInterface(object):
         self.logger.info("[WS] Authenticated to exchange")
 
     def on_error(self, ws, error):
+        #type: (websocket.WebSocketApp, str)
         self.logger.info("[WS] on_error event, err = {}".format(error))
+        self.logger.debug("ws = {}".format(ws))
+        self.logger.debug("[WS] Re-connecting")
+        self.ws.send(self.auth_request())
 
     def on_close(self, ws, message):
         self.logger.info("[WS] on_close event, msg = {}".format(message))
@@ -141,7 +149,8 @@ class CexioMarketDataHandler(CexioInterface):
     def md_update_act(self, msg):
         self.logger.debug("[WS] md_update received")
         ccy = str(msg['data']['pair']).replace(":", "")
-        self.update_order_book(ccy, msg['data']['bids'], msg['data']['asks'])
+        # commenting to test ws disconnection
+        #self.update_order_book(ccy, msg['data']['bids'], msg['data']['asks'])
         self.record_best_bid_ask(ccy)
         self.record_order_book_histo(ccy)
         self.number_of_updates += 1
@@ -256,8 +265,9 @@ class CexioTraderBot(CexioInterface):
     """
     CexioTraderBot allows trading
     """
-    def __init__(self, key, secret, cexio_logger):
-        CexioInterface.__init__(self, key, secret, cexio_logger)
+    def __init__(self, key, secret, db_interface, cexio_logger):
+        CexioInterface.__init__(self, key, secret, db_interface, cexio_logger)
+        self.start()
 
     def update_balance(self):
         self.logger.info("Requesting updated balance...")
@@ -268,3 +278,13 @@ class CexioTraderBot(CexioInterface):
                 "oid": oid
                 })
         self.ws.send(msg)
+
+    """def order_balance(self):
+        self.logger.info("Requesting order balance...")
+        oid = str(self.get_timestamp()) + "_get-obalance"
+        msg = json.dumps({
+            "e": "obalance",
+            "data": {},
+            "oid": oid
+        })
+        self.ws.send(msg)"""
