@@ -39,6 +39,8 @@ class CrateDbInterface(object):
             self.logger.warning("Couldn't connect to DB!")
         self.cursor = self.connection.cursor()
 
+        #self.queries_stack =
+
     def format_query(self, query):
         return """""""{}""""""".format(query)
 
@@ -57,6 +59,10 @@ class CrateDbInterface(object):
 
             self.cursor.execute(self.format_query(self.init_tables[t]))
             self.logger.info("Table {} created".format(t))
+
+    def stack_query(self, query):
+        pass
+
 
     def run_query(self, query):
         self.logger.debug("Running command:\n{}\n".format(self.format_query(query)))

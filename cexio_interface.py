@@ -1,14 +1,11 @@
 import hmac
 import hashlib
-import datetime, time, sys
+import time
 import json, yaml
-import pdb
-import logging
-import threading
 import thread
-from tabulate import tabulate
 from collections import OrderedDict
 from db_interface import CrateDbInterface
+import Queue
 
 import websocket
 
@@ -37,6 +34,7 @@ class CexioInterface(object):
             }
         self.is_connected = False
         self.db = db_interface
+        self.msg_queue = Queue.Queue()
     
     def start(self):
         self.logger.info("Starting new {}".format(type(self)))
@@ -47,7 +45,19 @@ class CexioInterface(object):
                                   on_close = self.on_close)
         self.ws.on_open = self.on_open
         thread.start_new_thread(self.ws.run_forever, ())
-        time.sleep(1)
+        thread.start_new_thread(self.start_msg_listener, ())
+
+
+    def start_msg_listener(self):
+        while True:
+            next_msg = self.msg_queue.get()
+            self.logger.debug("next msg: {}".format(next_msg))
+            self.logger.debug("[WS] on_message event, msg = {}".format(next_msg))
+            if next_msg['e'] in self.actions_on_msg_map.keys():
+                self.logger.debug("Message {} recognised, launching {}".format(next_msg, self.actions_on_msg_map[next_msg['e']]))
+                self.actions_on_msg_map[next_msg['e']](next_msg)
+            else:
+                self.logger.warning("Unknown message: {}, will be discarded".format(next_msg))
 
     def restart_ws(self):
         self.logger.info("Restarting WebSocket")
@@ -56,12 +66,14 @@ class CexioInterface(object):
 
     def on_message(self, ws, message):
         msg = yaml.load(message)
-        self.logger.debug("[WS] on_message event, msg = {}".format(msg))
+        self.msg_queue.put(msg)
+        """self.logger.debug("[WS] on_message event, msg = {}".format(msg))
         if msg['e'] in self.actions_on_msg_map.keys():
             self.logger.debug("Message {} recognised, launching {}".format(msg, self.actions_on_msg_map[msg['e']]))
+            self.msg_queue.put(msg)
             self.actions_on_msg_map[msg['e']](msg)
         else:
-            self.logger.warning("Unknown message: {}, will be discarded".format(msg))
+            self.logger.warning("Unknown message: {}, will be discarded".format(msg))"""
 
     def connected_act(self, msg):
         self.is_connected = True
@@ -82,7 +94,7 @@ class CexioInterface(object):
 
     def on_error(self, ws, error):
         #type: (websocket.WebSocketApp, str)
-        self.logger.info("[WS] on_error event, err = {}".format(error))
+        self.logger.warning("[WS] on_error event, err = {}".format(error))
         self.logger.debug("ws = {}".format(ws))
         self.logger.debug("[WS] Re-connecting")
         self.ws.send(self.auth_request())
@@ -135,6 +147,7 @@ class CexioMarketDataHandler(CexioInterface):
         self.logger.debug("actions_in_msg_map for {} = {}".format(type(self), self.actions_on_msg_map.keys()))
 
     def tick_act(self, msg):
+        self.logger.warning("tick_act ! ####To Be Implemented###")
         pass
 
     def order_book_snapshot_act(self, msg):
@@ -200,7 +213,7 @@ class CexioMarketDataHandler(CexioInterface):
 
     def start_listening(self):
         self.start()
-        time.sleep(1)
+        #time.sleep(1)
 
 
     def subscribe_tickers(self):
