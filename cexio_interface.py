@@ -46,6 +46,15 @@ class CexioInterface(object):
         self.ws.on_open = self.on_open
         thread.start_new_thread(self.ws.run_forever, ())
         thread.start_new_thread(self.start_msg_listener, ())
+        time.sleep(1)
+
+
+    def restart(self):
+        self.logger.info("Launching new start ({})".format(type(self)))
+        self.start()
+        self.subscribe_orderbook('BTC', 'USD', 5)
+        self.subscribe_orderbook('BTC', 'EUR', 5)
+        self.subscribe_orderbook('BTC', 'GBP', 5)
 
 
     def start_msg_listener(self):
@@ -106,8 +115,9 @@ class CexioInterface(object):
         #type: (websocket.WebSocketApp, str)
         self.logger.warning("[WS] on_error event, err = {}".format(error))
         self.logger.debug("ws = {}".format(ws))
-        self.logger.debug("[WS] Re-connecting")
-        self.ws.send(self.auth_request())
+        self.logger.debug("Need to reconnect. Launching restart")
+        self.is_connected = False
+        self.restart()
 
     def on_close(self, ws, message):
         self.logger.info("[WS] on_close event, msg = {}".format(message))
@@ -147,6 +157,7 @@ class CexioMarketDataHandler(CexioInterface):
     def __init__(self, key, secret, db_interface, cexio_logger):
         CexioInterface.__init__(self, key, secret, db_interface, cexio_logger)
         self.ccy_order_books = {}
+        self.ccy_depth = {}
         #ccy_order_books_buffer: dict(ccy) -> {timestamp: [(bid_qty, bid, ask, ask_qty)]}
         self.ccy_order_books_buffer = {}
         self.actions_on_msg_map['tick'] = self.tick_act
@@ -210,6 +221,8 @@ class CexioMarketDataHandler(CexioInterface):
 
 
     def update_order_book(self, ccy, bids, asks):
+        nb_bids_added, nb_asks_added = (0, 0)
+
         self.logger.debug("Updating order_book for {}".format(ccy))
         self.logger.debug("{} Order book was : {}".format(ccy, self.ccy_order_books[ccy]))
         self.logger.debug("Bids = {}, Asks = {}".format(bids, asks))
@@ -222,6 +235,7 @@ class CexioMarketDataHandler(CexioInterface):
                     self.logger.warning("Exception: something went wrong when popping {} from bids".format(b[0]))
             else:
                 self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
+                nb_bids_added += 1
         for a in asks:
             if a[1] == 0:
                 try:
@@ -230,10 +244,29 @@ class CexioMarketDataHandler(CexioInterface):
                     self.logger.warning("Exception: something went wrong when popping {} from asks".format(a[0]))
             else:
                 self.ccy_order_books[ccy]['asks'][a[0]] = a[1]
+                nb_asks_added += 1
         self.logger.debug("Order book updated: {}".format(self.ccy_order_books[ccy]))
-        self.ccy_order_books[ccy]['asks']  = OrderedDict(sorted(self.ccy_order_books[ccy]['asks'].items(), key=lambda t: t[0]))
+        self.ccy_order_books[ccy]['asks']  = OrderedDict(
+            sorted(self.ccy_order_books[ccy]['asks'].items(), key=lambda t: float(t[0])))
         self.ccy_order_books[ccy]['bids'] = OrderedDict(
-            sorted(self.ccy_order_books[ccy]['bids'].items(), key=lambda t: t[0], reverse=True))
+            sorted(self.ccy_order_books[ccy]['bids'].items(), key=lambda t: float(t[0]), reverse=True))
+        self.logger.debug("Orderbook ({}) before truncating: \n{}".format(ccy, self.ccy_order_books[ccy]))
+        self.logger.debug(
+            "self.ccy_order_books[ccy]['bids'].keys() = {}".format(self.ccy_order_books[ccy]['bids'].keys()))
+        self.logger.debug("self.ccy_order_books[ccy]['bids'].keys()[0:self.ccy_depth[ccy]] {}".format(
+            self.ccy_order_books[ccy]['bids'].keys()[
+            0:self.ccy_depth[ccy]]))
+
+        self.logger.debug(
+            "self.ccy_order_books[ccy]['asks'].keys() = {}".format(self.ccy_order_books[ccy]['asks'].keys()))
+        self.logger.debug("self.ccy_order_books[ccy]['asks'].keys()[0:self.ccy_depth[ccy]] {}".format(
+            self.ccy_order_books[ccy]['asks'].keys()[
+            0:self.ccy_depth[ccy]]))
+
+        # Check feed is not crossed:
+
+        if self.ccy_order_books[ccy]['bids'].keys()[0] >= self.ccy_order_books[ccy]['asks'].keys()[0]:
+            self.logger.warning("ERROR: feed on {} is crossed!\n\t{}\n\t{}".format(ccy, self.ccy_order_books[ccy]['bids'], self.ccy_order_books[ccy]['asks']))
         self.logger.debug("Order book updated and sorted: {}".format(self.ccy_order_books[ccy]))
 
     def start_listening(self):
@@ -252,6 +285,7 @@ class CexioMarketDataHandler(CexioInterface):
 
     def subscribe_orderbook(self, symbol1, symbol2, depth = -1):
         ccy = "{}{}".format(symbol1, symbol2)
+        self.ccy_depth[ccy] = depth
         self.logger.info("[WS] Subscribing to pair {}".format(ccy))
         self.debug_number_of_updates[ccy] = 0
         self.debug_init_time[ccy] = time.time()

@@ -1,4 +1,6 @@
 import logging
+from logging.handlers import RotatingFileHandler
+
 import sys, os
 from datetime import datetime
 
@@ -9,13 +11,13 @@ def get_logger(logger_name):
 
 
 #    filepath = "../logs/{}_{}.log".format(logger_name, datetime.now().strftime('%Y%m%d_%H%M'))
-    filepath = "../logs/{}_{}.log".format(logger_name, datetime.now().strftime('%Y%m%d_%H%M'))
+    filepath = "D:/logs/tradebot/{}_{}.log".format(logger_name, datetime.now().strftime('%Y%m%d_%H%M'))
     if os.path.isfile(filepath):
         print "Logfile for {} already existing, will try to delete it...".format(logger_name)
         os.remove(filepath)
         print "Logfile for {} deleted".format(logger_name)
 
-    handler = logging.FileHandler(filepath)
+    handler = RotatingFileHandler(filepath, 'a', maxBytes=10000000, backupCount=1000)
     handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
