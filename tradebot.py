@@ -66,8 +66,8 @@ if __name__ == "__main__":
     cmdh.start()
     time.sleep(3)
     cmdh.subscribe_orderbook('BTC', 'USD', 3)
-    cmdh.subscribe_orderbook('BTC', 'EUR', 4)
-    cmdh.subscribe_orderbook('BTC', 'GBP', 5)
+    #cmdh.subscribe_orderbook('BTC', 'EUR', 4)
+    #cmdh.subscribe_orderbook('BTC', 'GBP', 5)
     #cmdh.subscribe_orderbook('BTC', 'EUR', 10)
     #ctb = CexioTraderBot(cred['key'], cred['secret'], crate_interface, cexio_logger)
     #assert ctb

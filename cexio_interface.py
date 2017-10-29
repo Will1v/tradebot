@@ -6,6 +6,7 @@ import thread
 from collections import OrderedDict
 from db_interface import CrateDbInterface
 import Queue
+from orderbook import Orderbook
 
 import websocket
 
@@ -19,7 +20,7 @@ class CexioInterface(object):
         CexioMarketDataHandler
         CexioTraderBot
     """
-    
+
     def __init__(self, key, secret, db_interface, cexio_logger):
 #       type: (String, String, CrateDbInterface, Logger) -> object
         self.key = key
@@ -35,7 +36,7 @@ class CexioInterface(object):
         self.is_connected = False
         self.db = db_interface
         self.msg_queue = Queue.Queue()
-    
+
     def start(self):
         self.logger.info("Starting new {}".format(type(self)))
         websocket.enableTrace(False)
@@ -176,37 +177,53 @@ class CexioMarketDataHandler(CexioInterface):
         pass
 
     def order_book_snapshot_act(self, msg):
-        ccy = msg['oid'][-6:]
+        ccy = msg['data']['pair']
         self.logger.info("[WS] order_book_snapshot received for {}".format(ccy))
-        self.ccy_order_books[ccy] = self.build_order_book(msg['data'])
+        self.ccy_order_books[ccy].build(msg['data'])
         self.logger.debug("Orderbook for {} is now: \n{}".format(ccy, self.ccy_order_books[ccy]))
         self.record_best_bid_ask(ccy)
-        self.debug_number_of_updates[ccy] += 1
+        self.ccy_order_books[ccy].update_nb += 1
 
     def md_update_act(self, msg):
         self.logger.debug("[WS] md_update received")
-        ccy = str(msg['data']['pair']).replace(":", "")
+        ccy = str(msg['data']['pair'])
         self.logger.debug("update for: {}".format(ccy))
         # commenting to test ws disconnection
-        self.update_order_book(ccy, msg['data']['bids'], msg['data']['asks'])
+        self.logger.debug("Orderbook before update:"
+                          " \nbids {}: {}\nasks {}: {}".format(ccy, self.ccy_order_books[ccy].get_sorted()['bids'],
+                                                         ccy, self.ccy_order_books[ccy].get_sorted()['asks']))
+        self.ccy_order_books[ccy].update(msg['data'])
         self.record_best_bid_ask(ccy)
-        #self.record_order_book_histo(ccy)
-        self.debug_number_of_updates[ccy] += 1
-        self.logger.debug("orderbook update #{} for {} (average of {} updates/sec)".format(self.debug_number_of_updates[ccy], ccy, self.debug_number_of_updates[ccy]/(time.time() - self.debug_init_time[ccy])))
+        self.logger.debug("Orderbook after update:"
+                          " \nbids {}: {}\nasks {}: {}".format(ccy, self.ccy_order_books[ccy].get_sorted()['bids'],
+                                                         ccy, self.ccy_order_books[ccy].get_sorted()['asks']))
+        self.ccy_order_books[ccy].update_nb += 1
+        self.logger.debug("orderbook update #{} for {} (average of {} updates/sec)".format(self.ccy_order_books[ccy].update_nb, ccy, self.ccy_order_books[ccy].update_nb/(time.time() - self.ccy_order_books[ccy].init_time)))
+        if not self.ccy_order_books[ccy].is_valid():
+            self.resubscribe_orderbook(ccy)
 
+    """ TODO: needs to be refactored to new Orderbook objects"""
     def record_best_bid_ask(self, ccy):
         self.logger.debug("ccy = {}".format(ccy))
-        data_dict = {
-            'timestamp': self.get_ms_timestamp(),
-            'ccy_id': ccy,
-            'ask_qty': self.ccy_order_books[ccy]['asks'].values()[0],
-            'ask': self.ccy_order_books[ccy]['asks'].keys()[0],
-            'bid_qty': self.ccy_order_books[ccy]['bids'].values()[0],
-            'bid': self.ccy_order_books[ccy]['bids'].keys()[0]
-        }
-        self.logger.debug("Datadict about to be insterted in raw_market_data_histo: {}".format(data_dict))
-        query = self.db.insert_query('raw_market_data_histo', data_dict)
-        self.db.run_query(query)
+        try:
+            data_dict = {
+                'timestamp': self.get_ms_timestamp(),
+                'ccy_id': ccy,
+                'bid': self.ccy_order_books[ccy].get_sorted()['bids'].keys()[0],
+                'bid_qty': self.ccy_order_books[ccy].get_sorted()['bids'].values()[0],
+                'ask': self.ccy_order_books[ccy].get_sorted()['asks'].keys()[0],
+                'ask_qty': self.ccy_order_books[ccy].get_sorted()['asks'].values()[0]
+            }
+            self.logger.debug("Orderbook sorted = \nbids: {}\nasks: {}".format(self.ccy_order_books[ccy].get_sorted()['bids'], self.ccy_order_books[ccy].get_sorted()['asks']))
+            self.logger.debug("Datadict about to be insterted in raw_market_data_histo: {}".format(data_dict))
+            query = self.db.insert_query('raw_market_data_histo', data_dict)
+            self.db.run_query(query)
+        except Exception as e:
+            self.logger.debug("Couldn't record_best_bid_ask for {}".format(ccy))
+            self.logger.debug("Exception thrown: \n{}".format(e))
+            self.logger.debug("Orderbook was: \n{}".format(self.ccy_order_books[ccy]))
+
+
 
     def record_order_book_histo(self, ccy):
         self.logger.debug("Recording order_book in order_book_histo")
@@ -217,57 +234,6 @@ class CexioMarketDataHandler(CexioInterface):
         }
         query = self.db.insert_query('order_book_histo', data_dict)
         self.db.run_query(query)
-
-
-
-    def update_order_book(self, ccy, bids, asks):
-        nb_bids_added, nb_asks_added = (0, 0)
-
-        self.logger.debug("Updating order_book for {}".format(ccy))
-        self.logger.debug("{} Order book was : {}".format(ccy, self.ccy_order_books[ccy]))
-        self.logger.debug("Bids = {}, Asks = {}".format(bids, asks))
-        for b in bids:
-            if b[1] == 0:
-                self.logger.debug("Removing bid: {}".format(b[0]))
-                try:
-                    self.ccy_order_books[ccy]['bids'].pop(b[0])
-                except:
-                    self.logger.warning("Exception: something went wrong when popping {} from bids".format(b[0]))
-            else:
-                self.ccy_order_books[ccy]['bids'][b[0]] = b[1]
-                nb_bids_added += 1
-        for a in asks:
-            if a[1] == 0:
-                try:
-                    self.ccy_order_books[ccy]['asks'].pop(a[0])
-                except:
-                    self.logger.warning("Exception: something went wrong when popping {} from asks".format(a[0]))
-            else:
-                self.ccy_order_books[ccy]['asks'][a[0]] = a[1]
-                nb_asks_added += 1
-        self.logger.debug("Order book updated: {}".format(self.ccy_order_books[ccy]))
-        self.ccy_order_books[ccy]['asks']  = OrderedDict(
-            sorted(self.ccy_order_books[ccy]['asks'].items(), key=lambda t: float(t[0])))
-        self.ccy_order_books[ccy]['bids'] = OrderedDict(
-            sorted(self.ccy_order_books[ccy]['bids'].items(), key=lambda t: float(t[0]), reverse=True))
-        self.logger.debug("Orderbook ({}) before truncating: \n{}".format(ccy, self.ccy_order_books[ccy]))
-        self.logger.debug(
-            "self.ccy_order_books[ccy]['bids'].keys() = {}".format(self.ccy_order_books[ccy]['bids'].keys()))
-        self.logger.debug("self.ccy_order_books[ccy]['bids'].keys()[0:self.ccy_depth[ccy]] {}".format(
-            self.ccy_order_books[ccy]['bids'].keys()[
-            0:self.ccy_depth[ccy]]))
-
-        self.logger.debug(
-            "self.ccy_order_books[ccy]['asks'].keys() = {}".format(self.ccy_order_books[ccy]['asks'].keys()))
-        self.logger.debug("self.ccy_order_books[ccy]['asks'].keys()[0:self.ccy_depth[ccy]] {}".format(
-            self.ccy_order_books[ccy]['asks'].keys()[
-            0:self.ccy_depth[ccy]]))
-
-        # Check feed is not crossed:
-
-        if self.ccy_order_books[ccy]['bids'].keys()[0] >= self.ccy_order_books[ccy]['asks'].keys()[0]:
-            self.logger.warning("ERROR: feed on {} is crossed!\n\t{}\n\t{}".format(ccy, self.ccy_order_books[ccy]['bids'], self.ccy_order_books[ccy]['asks']))
-        self.logger.debug("Order book updated and sorted: {}".format(self.ccy_order_books[ccy]))
 
     def start_listening(self):
         self.start()
@@ -283,14 +249,11 @@ class CexioMarketDataHandler(CexioInterface):
         })
         self.ws.send(msg)
 
-    def subscribe_orderbook(self, symbol1, symbol2, depth = -1):
-        ccy = "{}{}".format(symbol1, symbol2)
-        self.ccy_depth[ccy] = depth
+    def subscribe_orderbook(self, symbol1, symbol2, depth = 5):
+        ccy = "{}:{}".format(symbol1, symbol2)
+        self.ccy_order_books[ccy] = Orderbook(ccy, depth)
         self.logger.info("[WS] Subscribing to pair {}".format(ccy))
-        self.debug_number_of_updates[ccy] = 0
         self.debug_init_time[ccy] = time.time()
-#        self.methods_to_relaunch_on_reconnect.append({self.subscribe_orderbook, [symbol1, symbol2, depth]})
-#        self.logger.debug("Methods to restart on reconnect: {}".format(self.methods_to_relaunch_on_reconnect))
         if not self.is_connected:
             self.start()
             self.logger.warning("Not connected, trying to reconnect")
@@ -305,6 +268,27 @@ class CexioMarketDataHandler(CexioInterface):
                 ],
                 "subscribe": True,
                 "depth": depth
+            },
+            "oid": oid
+        })
+        self.ws.send(msg)
+
+    def resubscribe_orderbook(self, pair, depth = 5):
+        self.unsubscribe_orderbook(pair)
+        self.subscribe_orderbook(pair[:3], pair[4:], self.ccy_order_books[pair].depth)
+        pass
+
+    def unsubscribe_orderbook(self, pair):
+        symbol1 = pair[:3]
+        symbol2 = pair[4:]
+        oid = "{}_orderbook-unsubscribe_{}{}".format(str(self.get_timestamp()), symbol1, symbol2)
+        msg = json.dumps({
+            "e": "order-book-unsubscribe",
+            "data": {
+                "pair": [
+                    symbol1,
+                    symbol2
+                ]
             },
             "oid": oid
         })
