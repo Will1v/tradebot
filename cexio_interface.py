@@ -251,7 +251,7 @@ class CexioMarketDataHandler(CexioInterface):
 
     def subscribe_orderbook(self, symbol1, symbol2, depth = 5):
         ccy = "{}:{}".format(symbol1, symbol2)
-        self.ccy_order_books[ccy] = Orderbook(ccy, depth)
+        self.ccy_order_books[ccy] = Orderbook(ccy, depth, self.logger)
         self.logger.info("[WS] Subscribing to pair {}".format(ccy))
         self.debug_init_time[ccy] = time.time()
         if not self.is_connected:

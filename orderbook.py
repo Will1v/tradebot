@@ -3,21 +3,27 @@ import time
 
 
 class Orderbook(object):
-    def __init__(self, ccy, depth):
+
+    def __init__(self, ccy, depth, logger):
         self.bids = dict()
         self.asks = dict()
         self.ccy = ccy
         self.depth = depth
         self.update_nb = 0
         self.init_time = time.time()
+        self.logger = logger
 
     def __str__(self):
         if len(self.bids) == 0 or len(self.asks) == 0:
             out = "Orderbook for {} is empty!".format(self.ccy)
         else:
-            zipmap = map(None, sorted(self.bids.keys(), reverse=True), sorted(self.asks.keys()))
-            ll = ["\t{}\t{}\t{}\t{}".format(self.bids.get(l[0]), l[0], l[1], self.asks.get(l[1])) for l in zipmap]
-            out = "\n{}".format(l for l in ll)
+            try:
+                zipmap = map(None, sorted(self.bids.keys(), reverse=True), sorted(self.asks.keys()))
+                ll = ["\t{}\t{}\t{}\t{}".format(self.bids.get(l[0]), l[0], l[1], self.asks.get(l[1])) for l in zipmap]
+                out = "\n{}".format(l for l in ll)
+            except Exception as e:
+                out = "Exception: {}".format(e)
+            out += "\nccy: {}\tdepth: {}\tinit_time: {}\t update_nb: {}".format(self.ccy, self.depth, self.init_time, self.update_nb)
         return out
 
 
@@ -41,24 +47,29 @@ class Orderbook(object):
         return False if max(self.bids.keys()) < min(self.asks.keys()) else True
 
     def update(self,data):
+        self.logger.debug("[Orderbook] Updating orderbook {} for update message id: {}".format(self.ccy, data['id']))
         # updating bids
         for bid, bidq in data['bids']:
             if int(bidq) == 0:
+                self.logger.debug("Popping {}@{}".format(bidq, bid))
                 try:
                     self.bids.pop(bid)
                 except:
-                    pass
+                    self.logger.warning("[Orderbook] Trouble while popping bid! (update id: {})".format(data['id']))
             else:
+                self.logger.debug("Adding {}@{}".format(bidq, bid))
                 self.bids[bid] = bidq
 
         # updating asks
         for ask, askq in data['asks']:
             if int(askq) == 0:
+                self.logger.debug("Popping {}@{}".format(askq, ask))
                 try:
                     self.asks.pop(ask)
                 except:
-                    pass
+                    self.logger.warning("[Orderbook] Trouble while popping bid! (update id: {})".format(data['id']))
             else:
+                self.logger.debug("Adding {}@{}".format(askq, ask))
                 self.asks[ask] = askq
 
 
